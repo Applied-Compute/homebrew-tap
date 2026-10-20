@@ -1,0 +1,48 @@
+name: Test tap
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      available: ${{ steps.formula.outputs.available }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - id: formula
+        name: Check release metadata
+        run: |
+          if test -f Formula/acshift.rb; then
+            test -f release.json
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            test ! -f release.json
+            echo 'Waiting for the first formula PR from the Relay release workflow.'
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+          fi
+  install:
+    needs: metadata
+    if: needs.metadata.outputs.available == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      HOMEBREW_NO_AUTOREMOVE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: Homebrew/actions/setup-homebrew@4790763c0a3ba4036f72634dc079c4a7dfcd4878
+      - name: Install published release through Homebrew
+        run: |
+          brew tap --custom-remote Applied-Compute/tap "$GITHUB_WORKSPACE"
+          brew install Applied-Compute/tap/acshift
+          brew test Applied-Compute/tap/acshift
+          acshift --version
+          brew uninstall acshift
