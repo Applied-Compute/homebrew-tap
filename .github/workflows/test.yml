@@ -1,0 +1,61 @@
+name: Test tap
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin-arm64
+          - runner: macos-15-intel
+            platform: darwin-amd64
+          - runner: ubuntu-24.04
+            platform: linux-amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: Homebrew/actions/setup-homebrew@4790763c0a3ba4036f72634dc079c4a7dfcd4878
+      - name: Check release metadata and checksum validation
+        run: |
+          python3 -m unittest discover -s tests
+          python3 scripts/release.py check
+      - name: Download pinned bundles
+        run: |
+          # Published releases remain testable after the website advances.
+          python3 scripts/release.py download --published --output "$RUNNER_TEMP/bundles" || \
+            python3 scripts/release.py download --output "$RUNNER_TEMP/bundles"
+      - name: Install candidate with Homebrew
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew tap --custom-remote Applied-Compute/tap "$GITHUB_WORKSPACE"
+          export TAP_PATH="$(brew --repository Applied-Compute/tap)"
+          # Test the reviewed bytes before their public release URLs exist.
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path(os.environ['TAP_PATH']) / 'Formula/acshift.rb'
+          lines = path.read_text().splitlines()
+          for index, line in enumerate(lines):
+              if line.strip().startswith('url "'):
+                  asset = line.rsplit('/', 1)[1].removesuffix('"')
+                  url = (Path(os.environ['RUNNER_TEMP']) / 'bundles' / asset).as_uri()
+                  lines[index] = f'      url "{url}"'
+          path.write_text('\n'.join(lines) + '\n')
+          PY
+          brew install Applied-Compute/tap/acshift
+          brew test Applied-Compute/tap/acshift
+          acshift --version
+          cmp "$(brew --prefix acshift)/libexec/acshift" <(tar -xOzf "$RUNNER_TEMP/bundles/acshift-$PLATFORM.tar.gz" "acshift-$PLATFORM")
+          brew uninstall acshift
